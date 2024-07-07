@@ -41,3 +41,4 @@ response = requests.post(f"{base_url}/users/login", data=json.dumps(credentials)
 results["POST /users/login"] = response.json()
     
 print(json.dumps(results, indent=4))
+

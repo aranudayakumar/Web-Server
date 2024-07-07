@@ -3,6 +3,8 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 import uuid
+from openai import OpenAI
+client = OpenAI()
 
 app = FastAPI(
     title="UgandAPI Chat",
@@ -48,14 +50,23 @@ def get_chats():
 
 @app.post("/chats", response_model=ChatMessage, status_code=201)
 def post_chat(new_message: NewChatMessage):
+    #chatgpt
+    completion = client.chat.completions.create(
+    model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": "- Your goal is to provide the user information about how to plant their farm in Uganda"},
+            {"role": "user", "content": new_message.content}
+        ]
+    )
     message = ChatMessage(
         messageId=str(uuid.uuid4()),
         sender=new_message.sender,
-        content=new_message.content,
+        content= str(completion.choices[0].message),
         timestamp=datetime.utcnow()
-    )
-    chats.append(message)
+    
+    )    
     return message
+
 
 @app.get("/chats/{messageId}", response_model=ChatMessage)
 def get_chat(messageId: str):
@@ -88,4 +99,4 @@ def register(user_registration: UserRegistration):
         "email": user_registration.email
     }
 
-# uvicorn filename:app --reload
+# uvicorn main:app --reload
