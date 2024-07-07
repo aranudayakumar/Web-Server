@@ -1,2 +1,4 @@
 venv/*
-__pycache__/main.cpython-311.pyc
+examples/fastapi-user/__pycache__/*
+__pycache__/*
+examples/fastapi-user/database.db
