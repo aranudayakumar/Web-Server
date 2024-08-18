@@ -2,3 +2,4 @@ venv/*
 examples/fastapi-user/__pycache__/*
 __pycache__/*
 examples/fastapi-user/database.db
+myenv/*
