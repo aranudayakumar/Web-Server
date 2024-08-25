@@ -7,3 +7,5 @@ bcrypt
 python-multipart
 PyJWT
 sqlalchemy
+bcrypt
+gaurdrails-ai

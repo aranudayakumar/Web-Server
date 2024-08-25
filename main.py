@@ -13,7 +13,9 @@ from tortoise.models import Model
 from tortoise import fields
 from passlib.hash import bcrypt
 from tortoise.contrib.pydantic import pydantic_model_creator
-
+from guardrails import Guard
+from guardrails.hub import NSFWText
+from guardrails.hub import RestrictToTopic
 
 # Define a simple secret key for JWT encoding
 JWT_SECRET = 'myjwtsecret'
@@ -118,6 +120,33 @@ def post_chat(new_message: NewChatMessage, token: str = Depends(oauth2_scheme), 
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     
+    
+    #gaurdrails
+    # Setup Guard with the validator
+    guard = Guard().use_many(
+    NSFWText(threshold=0.8, validation_method="sentence", on_fail="exception"),
+    RestrictToTopic(
+        valid_topics=[
+            "uganda", "farm", "planting", "crops", 
+            "plant", "buyanga", "mbale", "namutumbas"
+        ],
+        disable_classifier=True,
+        disable_llm=False,
+        on_fail="exception"
+        ))
+    try:
+        # Test failing response
+        guard.validate(new_message.content)
+    except Exception as e:
+        errorMessage = ChatMessage(
+        messageId=str(uuid.uuid4()),
+        sender=new_message.sender,
+        content= str(e),
+        timestamp=datetime.utcnow()
+        )  
+        return errorMessage
+        
+    
     #chatgpt
     completion = client.chat.completions.create(
     model="gpt-3.5-turbo",
@@ -171,5 +200,8 @@ async def get_items(str: Optional[str], token: str = Depends(oauth2_scheme), db:
 # Run the app
 if __name__ == "__main__":
     uvicorn.run(app, host="localhost", port=8000)
+    
+
+
 
 # uvicorn main:app --reload
