@@ -9,3 +9,6 @@ PyJWT
 sqlalchemy
 bcrypt
 gaurdrails-ai
+dotenv
+os
+

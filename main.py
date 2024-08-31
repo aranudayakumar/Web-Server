@@ -1,13 +1,15 @@
 from typing import List, Optional
-
-from openai import OpenAI
+import os
+from openai import OpenAI, AssistantEventHandler
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from datetime import datetime
 import uuid
 import jwt
+import re
 import sqlalchemy.orm as _orm
+from dotenv import load_dotenv
 import services as _services, schemas as _schemas
 from tortoise.models import Model
 from tortoise import fields
@@ -16,6 +18,7 @@ from tortoise.contrib.pydantic import pydantic_model_creator
 from guardrails import Guard
 from guardrails.hub import NSFWText
 from guardrails.hub import RestrictToTopic
+
 
 # Define a simple secret key for JWT encoding
 JWT_SECRET = 'myjwtsecret'
@@ -50,10 +53,12 @@ class ChatMessage(BaseModel):
     sender: str
     content: str
     timestamp: datetime
+    thread_id: Optional[str] = None  # Make thread_id optional in the response
 
 class NewChatMessage(BaseModel):
     sender: str
     content: str
+    thread_id: Optional[str] = None  # Include thread_id in the request model
 
 class UserCredentials(BaseModel):
     username: str
@@ -74,7 +79,46 @@ class TokenResponse(BaseModel):
 
 # In-memory storage for simplicity
 chats = []
+users = {}
 tokens = {}
+
+def interact_with_assistant(prompt, thread_id=None):
+    assistant = "asst_gJkvVb6RSZj8BofmghLOnWVi"
+    
+     # If a thread already exists, use its ID; otherwise, create a new one
+    try:
+        with open("thread_id.txt", "r") as file:
+            thread_id = file.read().strip()
+    except FileNotFoundError:
+        thread = client.beta.threads.create()
+        thread_id = thread.id
+        with open("thread_id.txt", "w") as file:
+            file.write(thread_id)
+
+    # Create a message before starting the stream
+    message = client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=prompt
+    )
+
+    class EventHandler(AssistantEventHandler):
+        def on_text_delta(self, delta, snapshot):
+            cleaned_value = re.sub(r"【\d+:\d+†.*?】", "", delta.value)
+            self.response.append(cleaned_value)
+
+    handler = EventHandler()
+    handler.response = []
+
+    # Stream the response from the assistant
+    with client.beta.threads.runs.stream(
+        thread_id=thread_id,
+        assistant_id=assistant,
+        event_handler=handler,
+    ) as stream:
+        stream.until_done()
+
+    return "".join(handler.response), thread_id
 
 # Authentication and Token Management
 async def authenticate_user(username: str, password: str, db: _orm.Session = Depends(_services.get_db)):
@@ -101,6 +145,23 @@ async def generate_token(form_data: OAuth2PasswordRequestForm= Depends(),  db: _
 # User Registration
 @app.post("/users/register", response_model=_schemas.User)
 async def create_user(user: _schemas.UserCreate, db: _orm.Session = Depends(_services.get_db)):
+    
+    # Load verified users from environment variable
+    verified_users = os.getenv("VERIFIED_USERS", "").split(",")
+    verified_usernames = set(verified_users)
+    print(f"Verified users loaded: {verified_usernames}")  # Debugging print
+    
+    # Check if the username is in the verified users list
+    print(f"Attempting to register user: {user.username}")  # Debugging print
+
+    if user.username not in verified_usernames:
+        print(f"Username {user.username} is not verified.")  # Debugging print
+        raise HTTPException(
+            status_code=400, detail="Username is not verified for registration."
+        )
+    # Check if the username already exists in the database.
+    
+    
     db_user =  _services.get_user_by_username(db=db, username=user.username)
     if db_user:
         raise HTTPException(
@@ -147,21 +208,19 @@ def post_chat(new_message: NewChatMessage, token: str = Depends(oauth2_scheme), 
         return errorMessage
         
     
-    #chatgpt
-    completion = client.chat.completions.create(
-    model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": "- Your goal is to provide the user information about how to plant their farm in Uganda"},
-            {"role": "user", "content": new_message.content}
-        ]
-    )
+    # Interact with OpenAI assistant
+    response_content, thread_id = interact_with_assistant(new_message.content, new_message.thread_id)
+
+    # Create a response message
     message = ChatMessage(
         messageId=str(uuid.uuid4()),
         sender=new_message.sender,
-        content= str(completion.choices[0].message),
-        timestamp=datetime.utcnow()
-    
-    )    
+        content=response_content,
+        timestamp=datetime.utcnow(),
+        thread_id=thread_id
+    )
+
+    # Return the response
     return message
 
 @app.get("/chats/{messageId}", response_model=ChatMessage)
@@ -196,6 +255,10 @@ async def get_items(str: Optional[str], token: str = Depends(oauth2_scheme), db:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     #this is where our app comes in
     return 'Hello world'
+
+# Function to interact with the assistant
+
+
 
 # Run the app
 if __name__ == "__main__":
