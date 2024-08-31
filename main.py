@@ -1,3 +1,4 @@
+import json
 from typing import List, Optional
 import os
 from openai import OpenAI, AssistantEventHandler
@@ -82,18 +83,32 @@ chats = []
 users = {}
 tokens = {}
 
-def interact_with_assistant(prompt, thread_id=None):
+def get_user_threads():
+    """Load user thread IDs from a JSON file."""
+    try:
+        with open("user_threads.json", "r") as file:
+            return json.load(file)
+    except FileNotFoundError:
+        return {}
+def save_user_threads(user_threads):
+    """Save user thread IDs to a JSON file."""
+    with open("user_threads.json", "w") as file:
+        json.dump(user_threads, file)
+
+def interact_with_assistant(prompt, username):
     assistant = "asst_gJkvVb6RSZj8BofmghLOnWVi"
     
-     # If a thread already exists, use its ID; otherwise, create a new one
-    try:
-        with open("thread_id.txt", "r") as file:
-            thread_id = file.read().strip()
-    except FileNotFoundError:
+    user_threads = get_user_threads()
+    thread_id = user_threads.get(username)
+    
+    if not thread_id:
+        # If the user doesn't have a thread_id, create a new one
         thread = client.beta.threads.create()
         thread_id = thread.id
-        with open("thread_id.txt", "w") as file:
-            file.write(thread_id)
+        user_threads[username] = thread_id
+        save_user_threads(user_threads)
+    
+    
 
     # Create a message before starting the stream
     message = client.beta.threads.messages.create(
@@ -175,11 +190,14 @@ def get_chats():
     return chats
 
 @app.post("/chats", response_model=ChatMessage, status_code=201)
-def post_chat(new_message: NewChatMessage, token: str = Depends(oauth2_scheme), db: _orm.Session = Depends(_services.get_db)):
+async def post_chat(new_message: NewChatMessage, token: str = Depends(oauth2_scheme), db: _orm.Session = Depends(_services.get_db)):
     #authentication
-    user = get_token(token, db)    
+    user = await get_token(token, db)    
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    
+    username = user.username
     
     
     #gaurdrails
@@ -209,7 +227,7 @@ def post_chat(new_message: NewChatMessage, token: str = Depends(oauth2_scheme), 
         
     
     # Interact with OpenAI assistant
-    response_content, thread_id = interact_with_assistant(new_message.content, new_message.thread_id)
+    response_content, thread_id = interact_with_assistant(new_message.content, username)
 
     # Create a response message
     message = ChatMessage(
