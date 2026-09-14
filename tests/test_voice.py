@@ -1,10 +1,14 @@
 import unittest
 
+import requests
+
 from app.voice.stt import OpenAISpeechToText, inspect_wav_audio, validate_audio_payload
 import io
 import struct
 import wave
 from app.voice.tts import OpenAITextToSpeech
+from app.voice.sunbird_stt import SunbirdSpeechToText
+from app.voice.sunbird_tts import SunbirdTextToSpeech
 
 
 class _FakeTranscription:
@@ -117,6 +121,132 @@ class TextToSpeechTests(unittest.TestCase):
         service = OpenAITextToSpeech(client=_FakeTTSClient(content=b""))
         with self.assertRaises(RuntimeError):
             service.synthesize("Plant maize.")
+
+
+class _FakeSunbirdResponse:
+    def __init__(self, status_code=200, json_data=None, content=b"", headers=None):
+        self.status_code = status_code
+        self._json_data = json_data or {}
+        self.content = content
+        self.headers = headers or {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} error", response=self)
+
+    def json(self):
+        return self._json_data
+
+
+class _FakeSunbirdSession:
+    def __init__(self, post_response=None, get_response=None):
+        self.post_response = post_response or _FakeSunbirdResponse()
+        self.get_response = get_response or _FakeSunbirdResponse()
+        self.post_calls = []
+        self.get_calls = []
+
+    def post(self, url, **kwargs):
+        self.post_calls.append((url, kwargs))
+        return self.post_response
+
+    def get(self, url, **kwargs):
+        self.get_calls.append((url, kwargs))
+        return self.get_response
+
+
+class SunbirdSpeechToTextTests(unittest.TestCase):
+    def test_transcribe_returns_stripped_text(self):
+        session = _FakeSunbirdSession(
+            post_response=_FakeSunbirdResponse(json_data={"audio_transcription": "  Sasa oli otya?  "})
+        )
+        service = SunbirdSpeechToText(
+            session=session, api_token="test-token", base_url="https://api.sunbird.ai", language="lug"
+        )
+        result = service.transcribe(b"fake-audio-bytes", filename="clip.wav")
+        self.assertEqual(result, "Sasa oli otya?")
+        url, kwargs = session.post_calls[0]
+        self.assertEqual(url, "https://api.sunbird.ai/tasks/audio/transcriptions")
+        self.assertEqual(kwargs["data"]["language"], "lug")
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer test-token")
+
+    def test_transcribe_rejects_empty_audio(self):
+        service = SunbirdSpeechToText(session=_FakeSunbirdSession(), api_token="test-token")
+        with self.assertRaises(ValueError):
+            service.transcribe(b"")
+
+    def test_transcribe_rejects_blank_transcription(self):
+        session = _FakeSunbirdSession(post_response=_FakeSunbirdResponse(json_data={"audio_transcription": "   "}))
+        service = SunbirdSpeechToText(session=session, api_token="test-token")
+        with self.assertRaises(ValueError):
+            service.transcribe(b"fake-audio-bytes")
+
+    def test_transcribe_wraps_http_errors(self):
+        session = _FakeSunbirdSession(post_response=_FakeSunbirdResponse(status_code=401))
+        service = SunbirdSpeechToText(session=session, api_token="test-token")
+        with self.assertRaises(RuntimeError):
+            service.transcribe(b"fake-audio-bytes")
+
+    def test_requires_api_token(self):
+        with self.assertRaises(RuntimeError):
+            SunbirdSpeechToText(session=_FakeSunbirdSession(), api_token=None)
+
+
+class SunbirdTextToSpeechTests(unittest.TestCase):
+    def test_synthesize_returns_audio_bytes_and_detects_format(self):
+        session = _FakeSunbirdSession(
+            post_response=_FakeSunbirdResponse(json_data={"audio_url": "https://cdn.sunbird.ai/audio123.wav"}),
+            get_response=_FakeSunbirdResponse(content=b"wav-bytes", headers={"Content-Type": "audio/wav"}),
+        )
+        service = SunbirdTextToSpeech(session=session, api_token="test-token", voice="salt_lug_0001", language="lug")
+        audio = service.synthesize("Sasa oli otya?")
+        self.assertEqual(audio, b"wav-bytes")
+        self.assertEqual(service.audio_format, "wav")
+        post_url, post_kwargs = session.post_calls[0]
+        self.assertEqual(post_url, "https://api.sunbird.ai/tasks/audio/speech")
+        self.assertEqual(post_kwargs["json"]["voice"], "salt_lug_0001")
+        self.assertEqual(post_kwargs["json"]["language"], "lug")
+        get_url, _ = session.get_calls[0]
+        self.assertEqual(get_url, "https://cdn.sunbird.ai/audio123.wav")
+
+    def test_synthesize_rejects_empty_text(self):
+        service = SunbirdTextToSpeech(session=_FakeSunbirdSession(), api_token="test-token")
+        with self.assertRaises(ValueError):
+            service.synthesize("   ")
+
+    def test_synthesize_raises_when_no_audio_url(self):
+        session = _FakeSunbirdSession(post_response=_FakeSunbirdResponse(json_data={}))
+        service = SunbirdTextToSpeech(session=session, api_token="test-token")
+        with self.assertRaises(RuntimeError):
+            service.synthesize("Sasa oli otya?")
+
+    def test_synthesize_rejects_empty_audio_response(self):
+        session = _FakeSunbirdSession(
+            post_response=_FakeSunbirdResponse(json_data={"audio_url": "https://cdn.sunbird.ai/a.wav"}),
+            get_response=_FakeSunbirdResponse(content=b"", headers={"Content-Type": "audio/wav"}),
+        )
+        service = SunbirdTextToSpeech(session=session, api_token="test-token")
+        with self.assertRaises(RuntimeError):
+            service.synthesize("Sasa oli otya?")
+
+    def test_requires_api_token(self):
+        with self.assertRaises(RuntimeError):
+            SunbirdTextToSpeech(session=_FakeSunbirdSession(), api_token=None)
+
+
+class VoiceProviderSelectionTests(unittest.TestCase):
+    def test_selects_sunbird_when_configured(self):
+        from app.core.config import settings
+        from app.voice.router import get_speech_to_text, get_text_to_speech
+
+        original_provider, original_token = settings.VOICE_PROVIDER, settings.SUNBIRD_API_TOKEN
+        settings.VOICE_PROVIDER = "sunbird"
+        settings.SUNBIRD_API_TOKEN = "test-token"
+        try:
+            self.assertIsInstance(get_speech_to_text(), SunbirdSpeechToText)
+            self.assertIsInstance(get_text_to_speech(), SunbirdTextToSpeech)
+        finally:
+            settings.VOICE_PROVIDER = original_provider
+            settings.SUNBIRD_API_TOKEN = original_token
 
 
 if __name__ == "__main__":

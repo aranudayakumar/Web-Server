@@ -12,6 +12,7 @@ class OpenAITextToSpeech:
         )
         self.model = model or settings.OPENAI_TTS_MODEL
         self.voice = voice or settings.OPENAI_TTS_VOICE
+        self.audio_format = "mp3"
 
     def synthesize(self, text: str) -> bytes:
         if not text or not text.strip():

@@ -165,6 +165,31 @@ the reply as MP3 with OpenAI text-to-speech (`OPENAI_TTS_MODEL`/`OPENAI_TTS_VOIC
 }
 ```
 
+### Alternate provider: Sunbird AI (Ugandan languages)
+
+OpenAI's Whisper/TTS only handle English well. Set `VOICE_PROVIDER=sunbird` to route STT/TTS
+through [Sunbird AI](https://docs.sunbird.ai/languages) instead, whose models are fine-tuned
+for Luganda, Acholi, Ateso, Lugbara, Runyankole, Swahili, and dozens more African languages.
+`app/voice/router.py`'s `get_speech_to_text()`/`get_text_to_speech()` pick the provider at
+request time based on this setting — `app/voice/sunbird_stt.py` and `sunbird_tts.py` match
+the same `transcribe()`/`synthesize()` interface as the OpenAI classes, so nothing else in
+the voice pipeline changes.
+
+Config (`SUNBIRD_API_TOKEN` is required when `VOICE_PROVIDER=sunbird`):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `SUNBIRD_API_BASE_URL` | `https://api.sunbird.ai` | |
+| `SUNBIRD_API_TOKEN` | — | Bearer token from Sunbird's `/auth/token` (currently ~7-day validity — rotate it) |
+| `SUNBIRD_STT_LANGUAGE` | `lug` | ISO 639-3 code passed to `/tasks/audio/transcriptions` |
+| `SUNBIRD_TTS_LANGUAGE` | `lug` | Passed to `/tasks/audio/speech` |
+| `SUNBIRD_TTS_VOICE` | (unset) | Speaker/voice catalog ID (e.g. `salt_lug_0001`); left unset, Sunbird auto-resolves a voice for the language |
+| `SUNBIRD_TIMEOUT_SECONDS` | `30` | |
+
+Sunbird's TTS endpoint returns a JSON body with an `audio_url` rather than raw bytes;
+`SunbirdTextToSpeech.synthesize()` fetches that URL and reads the actual returned format off
+its `Content-Type` header (exposed afterward as `.audio_format`) rather than assuming MP3.
+
 ## Verification and rollback
 
 Run the full local suite with `python -m unittest discover -s tests -v`. For MySQL, set

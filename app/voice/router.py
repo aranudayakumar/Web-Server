@@ -15,10 +15,15 @@ from app.db.session import get_db
 from app.models import User
 from app.voice.stt import OpenAISpeechToText, validate_audio_payload
 from app.voice.tts import OpenAITextToSpeech
+from app.voice.sunbird_stt import SunbirdSpeechToText
+from app.voice.sunbird_tts import SunbirdTextToSpeech
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/voice", tags=["voice"])
+
+SpeechToTextProvider = OpenAISpeechToText | SunbirdSpeechToText
+TextToSpeechProvider = OpenAITextToSpeech | SunbirdTextToSpeech
 
 
 class VoiceChatResponse(BaseModel):
@@ -30,11 +35,15 @@ class VoiceChatResponse(BaseModel):
     timings: dict[str, int | None]
 
 
-def get_speech_to_text() -> OpenAISpeechToText:
+def get_speech_to_text() -> SpeechToTextProvider:
+    if settings.VOICE_PROVIDER == "sunbird":
+        return SunbirdSpeechToText()
     return OpenAISpeechToText()
 
 
-def get_text_to_speech() -> OpenAITextToSpeech:
+def get_text_to_speech() -> TextToSpeechProvider:
+    if settings.VOICE_PROVIDER == "sunbird":
+        return SunbirdTextToSpeech()
     return OpenAITextToSpeech()
 
 
@@ -46,8 +55,8 @@ async def voice_chat(
     include_audio: bool = Form(True),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-    stt: OpenAISpeechToText = Depends(get_speech_to_text),
-    tts: OpenAITextToSpeech = Depends(get_text_to_speech),
+    stt: SpeechToTextProvider = Depends(get_speech_to_text),
+    tts: TextToSpeechProvider = Depends(get_text_to_speech),
 ):
     """Speech in, speech out: transcribes the upload, runs it through the normal RAG
     chat pipeline, then synthesizes the reply as audio."""
@@ -133,5 +142,6 @@ async def voice_chat(
         content=content,
         citations=citations,
         audio_base64=base64.b64encode(reply_audio).decode("ascii"),
+        audio_format=getattr(tts, "audio_format", "mp3") if include_audio else "mp3",
         timings=timings,
     )
